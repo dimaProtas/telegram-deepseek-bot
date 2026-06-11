@@ -1,0 +1,22 @@
+# Secrets
+.env
+
+# Compiled binary
+bot
+
+# Runtime data
+data/
+
+# Aider artifacts
+.aider*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
