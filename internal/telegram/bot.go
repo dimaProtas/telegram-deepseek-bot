@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"telegram-deepseek-bot/internal/config"
@@ -24,6 +23,7 @@ type Bot struct {
 	store  *storage.MemoryStorage
 	logger *logger.Logger
 	agent  *opencode.Agent
+	router *CommandRouter
 }
 
 func NewBot(cfg *config.Config, ds *deepseek.Client, store *storage.MemoryStorage, log *logger.Logger, agent *opencode.Agent) (*Bot, error) {
@@ -44,14 +44,81 @@ func NewBot(cfg *config.Config, ds *deepseek.Client, store *storage.MemoryStorag
 		return nil, fmt.Errorf("failed to create bot: %w", err)
 	}
 
-	return &Bot{
+	b := &Bot{
 		api:    bot,
 		cfg:    cfg,
 		ds:     ds,
 		store:  store,
 		logger: log,
 		agent:  agent,
-	}, nil
+		router: NewCommandRouter(),
+	}
+	b.registerCommands()
+	return b, nil
+}
+
+func (b *Bot) registerCommands() {
+	registerAgentCommands(b.router)
+
+	defaultAgent := b.cfg.OpenCodeDefaultAgent
+	if defaultAgent != "" {
+		b.router.Register(NewAgentCommand("/run", defaultAgent, "OpenCode Agent"))
+	} else {
+		b.router.Register(&prefixCommand{
+			name:   "/run",
+			prefix: "/run",
+			fn: func(bot *Bot, msg *tgbotapi.Message, arg string) {
+				if arg == "" {
+					bot.sendMessage(msg.Chat.ID, "Укажите задачу после команды. Пример: /run <задача>")
+					return
+				}
+				bot.handleRun(msg.Chat.ID, msg.From.ID, arg)
+			},
+		})
+	}
+
+	b.router.Register(&exactCommand{name: "/start", prefix: "/start", fn: func(bot *Bot, msg *tgbotapi.Message) { bot.sendHelp(msg.Chat.ID) }})
+	b.router.Register(&exactCommand{name: "/help", prefix: "/help", fn: func(bot *Bot, msg *tgbotapi.Message) { bot.sendHelp(msg.Chat.ID) }})
+
+	b.router.Register(&exactCommand{name: "/clear", prefix: "/clear", fn: func(bot *Bot, msg *tgbotapi.Message) {
+		bot.store.Clear(msg.Chat.ID)
+		bot.sendMessage(msg.Chat.ID, "История диалога очищена.")
+	}})
+
+	b.router.Register(&exactCommand{name: "/state", prefix: "/state", fn: func(bot *Bot, msg *tgbotapi.Message) { bot.handleState(msg.Chat.ID) }})
+	b.router.Register(&exactCommand{name: "/retry", prefix: "/retry", fn: func(bot *Bot, msg *tgbotapi.Message) { bot.handleRetry(msg.Chat.ID) }})
+
+	b.router.Register(&prefixCommand{name: "/mode", prefix: "/mode", fn: func(bot *Bot, msg *tgbotapi.Message, arg string) {
+		bot.handleMode(msg.Chat.ID, msg.Text)
+	}})
+
+	b.router.Register(&prefixCommand{name: "/code", prefix: "/code", fn: func(bot *Bot, msg *tgbotapi.Message, arg string) {
+		bot.handleCode(msg.Chat.ID, arg)
+	}})
+
+	b.router.Register(&prefixCommand{name: "/review", prefix: "/review", fn: func(bot *Bot, msg *tgbotapi.Message, arg string) {
+		bot.handleFileCommand(msg.Chat.ID, arg, "review")
+	}})
+
+	b.router.Register(&prefixCommand{name: "/explain", prefix: "/explain", fn: func(bot *Bot, msg *tgbotapi.Message, arg string) {
+		bot.handleFileCommand(msg.Chat.ID, arg, "explain")
+	}})
+
+	b.router.Register(&prefixCommand{name: "/test", prefix: "/test", fn: func(bot *Bot, msg *tgbotapi.Message, arg string) {
+		bot.handleFileCommand(msg.Chat.ID, arg, "test")
+	}})
+
+	b.router.Register(&prefixCommand{name: "/docs", prefix: "/docs", fn: func(bot *Bot, msg *tgbotapi.Message, arg string) {
+		bot.handleFileCommand(msg.Chat.ID, arg, "docs")
+	}})
+
+	b.router.Register(&prefixCommand{name: "/chat", prefix: "/chat", fn: func(bot *Bot, msg *tgbotapi.Message, arg string) {
+		bot.handleChat(msg.Chat.ID, arg)
+	}})
+
+	b.router.Register(&fallbackCommand{name: "chat (default)", fn: func(bot *Bot, msg *tgbotapi.Message) {
+		bot.handleChat(msg.Chat.ID, msg.Text)
+	}})
 }
 
 func (b *Bot) Start() {
@@ -71,7 +138,7 @@ func (b *Bot) Start() {
 			continue
 		}
 
-		b.handleMessage(update.Message)
+		b.router.Dispatch(b, update.Message)
 	}
 }
 
@@ -86,88 +153,6 @@ func (b *Bot) isAllowed(msg *tgbotapi.Message) bool {
 		}
 	}
 	return false
-}
-
-func (b *Bot) handleMessage(msg *tgbotapi.Message) {
-	text := msg.Text
-	chatID := msg.Chat.ID
-
-	if strings.HasPrefix(text, "/start") {
-		b.sendHelp(chatID)
-		return
-	}
-
-	if strings.HasPrefix(text, "/help") {
-		b.sendHelp(chatID)
-		return
-	}
-
-	if strings.HasPrefix(text, "/clear") {
-		b.store.Clear(chatID)
-		b.sendMessage(chatID, "История диалога очищена.")
-		return
-	}
-
-	if strings.HasPrefix(text, "/state") {
-		b.handleState(chatID)
-		return
-	}
-
-	if strings.HasPrefix(text, "/retry") {
-		b.handleRetry(chatID)
-		return
-	}
-
-	if strings.HasPrefix(text, "/mode") {
-		b.handleMode(chatID, text)
-		return
-	}
-
-	if strings.HasPrefix(text, "/run ") {
-		prompt := strings.TrimPrefix(text, "/run ")
-		b.handleRun(chatID, msg.From.ID, prompt)
-		return
-	}
-
-	if strings.HasPrefix(text, "/code ") {
-		prompt := strings.TrimPrefix(text, "/code ")
-		b.handleCode(chatID, prompt)
-		return
-	}
-
-	if strings.HasPrefix(text, "/review ") {
-		file := strings.TrimPrefix(text, "/review ")
-		b.handleFileCommand(chatID, file, "review")
-		return
-	}
-
-	if strings.HasPrefix(text, "/explain ") {
-		file := strings.TrimPrefix(text, "/explain ")
-		b.handleFileCommand(chatID, file, "explain")
-		return
-	}
-
-	if strings.HasPrefix(text, "/test ") {
-		file := strings.TrimPrefix(text, "/test ")
-		b.handleFileCommand(chatID, file, "test")
-		return
-	}
-
-	if strings.HasPrefix(text, "/docs ") {
-		file := strings.TrimPrefix(text, "/docs ")
-		b.handleFileCommand(chatID, file, "docs")
-		return
-	}
-
-	// Basic chat command: /chat <prompt>
-	if strings.HasPrefix(text, "/chat ") {
-		prompt := strings.TrimPrefix(text, "/chat ")
-		b.handleChat(chatID, prompt)
-		return
-	}
-
-	// Default: treat as chat if no command
-	b.handleChat(chatID, text)
 }
 
 func (b *Bot) sendMessage(chatID int64, text string) {
@@ -252,18 +237,31 @@ func createProxyHTTPClient(addr, username, password string) (*http.Client, error
 }
 
 func (b *Bot) sendHelp(chatID int64) {
-	helpText := `Доступные команды:
-/chat <текст> - Запрос к AI
-/run <текст> - Локальное исполнение задачи через OpenCode Agent
-/code <текст> - Генерация кода (использует coder модель)
-/mode <модель> - Сменить модель (chat, coder, reasoner)
-/review <файл> - Ревью кода
-/explain <файл> - Объяснение кода
-/test <файл> - Генерация тестов
-/docs <файл> - Документация
-/state - Статистика токенов
-/retry - Повторить последний запрос
-/clear - Очистить историю
-/help - Справка`
+	helpText := `🤖 OpenCode агенты (выполнение задач):
+/run <задача> — общий агент (по умолчанию)
+/explore <задача> — исследование кодовой базы
+/go-senior <задача> — написание Go-кода (Senior уровень)
+/go-review <промпт> — ревью Go-кода
+/react-dev <задача> — разработка React-компонентов
+/react-review <промпт> — ревью React-кода
+/write-tests <промпт> — генерация тестов
+/tz <задача> — создание технического задания
+
+💬 Чат с DeepSeek:
+/chat <текст> — запрос к AI
+/code <текст> — генерация кода (coder модель)
+/mode <модель> — смена модели (chat, coder, reasoner)
+
+📄 Работа с файлами:
+/review <файл> — ревью кода
+/explain <файл> — объяснение кода
+/test <файл> — генерация тестов
+/docs <файл> — документация
+
+⚙️ Управление:
+/state — статистика токенов
+/retry — повторить последний запрос
+/clear — очистить историю
+/help — справка`
 	b.sendMessage(chatID, helpText)
 }

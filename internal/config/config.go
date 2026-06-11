@@ -10,19 +10,20 @@ import (
 )
 
 type Config struct {
-	TelegramToken     string
-	DeepSeekAPIKey    string
-	DeepSeekModel     string
-	DeepSeekAPIURL    string
-	DeepSeekMaxTokens int
-	DeepSeekTemp      float64
-	AllowedUserIDs    []int64
-	AllowedChatIDs    []int64
-	LogLevel          string
-	ConversationTTL   int
-	OpenCodeEndpoint  string
-	OpenCodeTimeout   int
-	OpenCodeWorkspace string
+	TelegramToken         string
+	DeepSeekAPIKey        string
+	DeepSeekModel         string
+	DeepSeekAPIURL        string
+	DeepSeekMaxTokens     int
+	DeepSeekTemp          float64
+	AllowedUserIDs        []int64
+	AllowedChatIDs        []int64
+	LogLevel              string
+	ConversationTTL       int
+	OpenCodeEndpoint      string
+	OpenCodeTimeout       int
+	OpenCodeWorkspace     string
+	OpenCodeDefaultAgent  string
 	ProxyConf
 }
 
@@ -49,9 +50,10 @@ func LoadConfig() *Config {
 		AllowedChatIDs:    getEnvAsIntSlice("ALLOWED_CHAT_IDS", []int64{}),
 		LogLevel:          getEnv("LOG_LEVEL", "info"),
 		ConversationTTL:   getEnvAsInt("CONVERSATION_TTL_HOURS", 24),
-		OpenCodeEndpoint:  getEnv("OPENCODE_ENDPOINT", "http://localhost:8080"),
-		OpenCodeTimeout:   getEnvAsInt("OPENCODE_TIMEOUT", 600),
-		OpenCodeWorkspace: getEnv("OPENCODE_WORKSPACE", "."),
+		OpenCodeEndpoint:      getEnv("OPENCODE_ENDPOINT", "http://localhost:8080"),
+		OpenCodeTimeout:       getEnvAsInt("OPENCODE_TIMEOUT", 600),
+		OpenCodeWorkspace:     getEnv("OPENCODE_WORKSPACE", "."),
+		OpenCodeDefaultAgent:  getEnv("OPENCODE_DEFAULT_AGENT", ""),
 		ProxyConf: ProxyConf{
 			Addr:     os.Getenv("PROXY_ADDR"),
 			Username: os.Getenv("PROXY_USERNAME"),

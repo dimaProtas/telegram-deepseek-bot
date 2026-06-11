@@ -39,11 +39,15 @@ func (a *Agent) ReadFile(fileName string) (string, error) {
 }
 
 func (a *Agent) Execute(ctx context.Context, prompt string) (string, error) {
+	return a.ExecuteWithAgent(ctx, prompt, "")
+}
+
+func (a *Agent) ExecuteWithAgent(ctx context.Context, prompt, agentName string) (string, error) {
 	if len(prompt) > 4096 {
 		return "", fmt.Errorf("prompt is too long (max 4096 characters)")
 	}
 
-	args := []string{"run", prompt, "--dangerously-skip-permissions"}
+	args := a.buildArgs(prompt, agentName)
 
 	cmd := exec.CommandContext(ctx, "opencode", args...)
 	cmd.Dir = a.cfg.OpenCodeWorkspace
@@ -69,4 +73,12 @@ func (a *Agent) Execute(ctx context.Context, prompt string) (string, error) {
 	}
 
 	return stdout.String(), nil
+}
+
+func (a *Agent) buildArgs(prompt, agentName string) []string {
+	args := []string{"run", prompt, "--dangerously-skip-permissions"}
+	if agentName != "" {
+		args = append(args, "--agent", agentName)
+	}
+	return args
 }
