@@ -2,7 +2,7 @@
 .env
 
 # Compiled binary
-bot
+# bot
 
 # Runtime data
 data/

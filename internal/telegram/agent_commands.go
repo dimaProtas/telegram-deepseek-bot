@@ -78,13 +78,32 @@ func registerAgentCommands(router *CommandRouter) {
 		agentName   string
 		displayName string
 	}{
-		{"/explore", "explore", "Explore"},
-		{"/go-review", "go-reviewer", "Go Review"},
+		// Go-разработка
 		{"/go-senior", "go-senior", "Go Senior Developer"},
+		{"/go-review", "go-reviewer", "Go Review"},
+		{"/debug", "debugging", "Debugging"},
+		{"/refactor", "refactoring", "Refactoring"},
+
+		// Базы данных
+		{"/postgres", "postgres-sql", "PostgreSQL"},
+		{"/clickhouse", "clickhouse-sql", "ClickHouse SQL"},
+		{"/dbint", "db-integration", "DB Integration"},
+
+		// Инфраструктура
+		{"/bash", "bash-linux", "Bash/Linux"},
+		{"/kestra", "kestra", "Kestra"},
+		{"/pipeline", "data-pipeline-architect", "Data Pipeline Architect"},
+		{"/orchestrate", "orchestrator", "Orchestrator"},
+
+		// Frontend
 		{"/react-dev", "react-developer", "React Developer"},
 		{"/react-review", "react-reviewer", "React Review"},
-		{"/write-tests", "test-writer", "Test Writer"},
+
+		// Документирование и тестирование
 		{"/tz", "tz-writer", "ТЗ Writer"},
+		{"/docgen", "documentation", "Documentation"},
+		{"/write-tests", "test-writer", "Test Writer"},
+		{"/explore", "explore", "Explore"},
 	}
 
 	for _, a := range agents {

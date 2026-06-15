@@ -1,544 +1,384 @@
-# Техническое задание: Команды для специализированных OpenCode-агентов
+# Техническое задание: Команды для ВСЕХ агентов OpenCode в Telegram-боте
 
 ## 1. Цель
 
-Расширить Telegram-бота командами для вызова **каждого специализированного агента OpenCode** по отдельности. Сейчас доступна только одна общая команда `/run`, которая вызывает opencode с агентом по умолчанию (general). Пользователь хочет иметь отдельные команды для всех доступных агентов:
+Добавить Telegram-команды для **всех оставшихся** специализированных агентов OpenCode, для которых ещё нет команд. На данный момент реализовано 7 агентских команд из 17 доступных агентов (плюс `/run` для default-агента). Задача — покрыть все 10 оставшихся агентов, чтобы пользователь мог вызвать **любого** агента по короткой интуитивной команде.
 
-- `explore` — исследование кодовой базы
-- `go-reviewer` — code review Go-кода уровня Senior/Staff Engineer
-- `go-senior` — написание production-ready Go-кода и архитектуры
-- `react-developer` — разработка React-компонентов
-- `react-reviewer` — code review React-кода
-- `test-writer` — написание unit/integration тестов для Go
-- `tz-writer` — создание технических заданий
-
-**Проблема**: единственная команда `/run` не позволяет выбрать агента. Пользователь вынужден формулировать промпт так, чтобы opencode сам догадался, какой агент использовать, что ненадёжно.
+**Проблема**: пользователь вынужден вручную описывать роль в промпте для `/run`, надеясь, что opencode сам выберет нужного агента. Это ненадёжно и требует лишних усилий. Отдельные команды гарантируют вызов правильного агента и улучшают UX.
 
 ## 2. Контекст
 
 ### 2.1. Текущая архитектура (AS-IS)
 
-**Диспетчеризация команд** (`handleMessage()` в `internal/telegram/bot.go:91-171`):
-- Цепочка `if/else if` проверяет префикс команды в тексте сообщения
-- 10+ проверок подряд
-- Каждая проверка жёстко завязана на строковый префикс (например, `strings.HasPrefix(text, "/run ")`)
+Архитектура Command Router (паттерн Command/Strategy) **уже полностью реализована**:
 
-**Вызов OpenCode** (`internal/opencode/agent.go:41-72`):
-- Метод `Execute(ctx, prompt)` собирает аргументы:
-  ```
-  opencode run <prompt> --dangerously-skip-permissions
-  ```
-- Агент не передаётся — используется default-агент opencode
-- Ограничение длины промпта: 4096 символов
+- **Интерфейс `Command`** (`internal/telegram/commands.go:9-13`) — контракт `Name()` / `Matches()` / `Execute()`
+- **`CommandRouter`** (`internal/telegram/commands.go:15-36`) — реестр команд с `Register()` и `Dispatch()`
+- **`exactCommand`**, **`prefixCommand`**, **`fallbackCommand`** — адаптеры для существующих обработчиков
+- **`AgentCommand`** (`internal/telegram/agent_commands.go:12-73`) — параметризованная структура для opencode-агентов:
+  - Поля: `prefix`, `agentName`, `displayName`
+  - Конструктор: `NewAgentCommand(prefix, agentName, displayName string)`
+  - `Execute()`: валидация промпта (пустой → подсказка, > 4096 → ошибка), отправка статуса, запуск горутины с таймаутом, логирование `[AGENT]`
+- **`registerAgentCommands()`** (`internal/telegram/agent_commands.go:75-93`) — регистрирует 7 агентов в роутере
+- **`Agent.ExecuteWithAgent()`** (`internal/opencode/agent.go:45-76`) — выполняет `opencode run <prompt> --dangerously-skip-permissions --agent <agentName>`
+- **`Agent.buildArgs()`** (`internal/opencode/agent.go:78-84`) — сборка аргументов командной строки
+- **`OpenCodeDefaultAgent`** в конфиге (`internal/config/config.go:26`) — позволяет переопределить агента по умолчанию для `/run`
 
-**Обработчик `/run`** (`handleRun()` в `bot.go:178-208`):
-- Отправляет статусное сообщение «⏳ Запуск OpenCode Agent...»
-- Запускает горутину с таймаутом из `cfg.OpenCodeTimeout`
-- Логирует время начала, успех/ошибку, длительность
-- Результат отправляет через `sendLongMessage()` (разбивка на части по 4096 символов)
+**Диспетчеризация** (`bot.go:60-122`): после `registerAgentCommands()` регистрируются `/run`, `/start`, `/help`, `/clear`, `/state`, `/retry`, `/mode`, `/code`, файловые команды (`/review`, `/explain`, `/test`, `/docs`), `/chat` и fallback.
 
-**Существующая команда `/test`** (`file_handlers.go:9-56`):
-- Работает с **локальными файлами** через DeepSeek API (не через opencode)
-- Формирует промпт для генерации тестов и отправляет в DeepSeek
-- Конфликтует по имени с будущей командой для агента `test-writer`
+### 2.2. Уже реализованные агентские команды
 
-### 2.2. Доступные opencode-агенты
-
-| Имя агента | Назначение | Предлагаемая команда |
+| Префикс команды | Имя агента `--agent` | Отображаемое имя |
 |---|---|---|
-| `explore` | Исследование кодовой базы | `/explore` |
-| `general` | Общие задачи (агент по умолчанию) | `/run` (оставить как есть) |
-| `go-reviewer` | Code review Go-кода (Senior/Staff) | `/go-review` |
-| `go-senior` | Написание production-ready Go-кода | `/go-senior` |
-| `react-developer` | Разработка React-компонентов | `/react-dev` |
-| `react-reviewer` | Code review React-кода | `/react-review` |
-| `test-writer` | Написание тестов для Go | `/write-tests` |
-| `tz-writer` | Создание технических заданий | `/tz` |
+| `/explore` | `explore` | Explore |
+| `/go-review` | `go-reviewer` | Go Review |
+| `/go-senior` | `go-senior` | Go Senior Developer |
+| `/react-dev` | `react-developer` | React Developer |
+| `/react-review` | `react-reviewer` | React Review |
+| `/write-tests` | `test-writer` | Test Writer |
+| `/tz` | `tz-writer` | ТЗ Writer |
+| `/run` | (пусто — default agent) | OpenCode Agent |
 
-### 2.3. Как opencode вызывает конкретного агента
+### 2.3. Агенты, для которых НЕТ команд (цель задачи)
 
-Согласно документации opencode, для вызова конкретного агента используется флаг `--agent`:
+| Имя агента в opencode | Назначение (из конфигурации opencode) |
+|---|---|
+| `bash-linux` | Bash, Linux, файлы, cron, rsync, права доступа, shell-скрипты |
+| `clickhouse-sql` | Эксперт по ClickHouse SQL — оптимизация запросов, MergeTree, TTL, batch processing |
+| `data-pipeline-architect` | Архитектор data pipelines — CSV, архивы, ClickHouse, Postgres, Kestra, идемпотентность |
+| `db-integration` | Интеграция Go-кода с ClickHouse и Postgres — драйверы, типы, batch insert, транзакции |
+| `debugging` | Диагностика ошибок в Go, ClickHouse, Postgres, Bash, Linux, Kestra |
+| `documentation` | Техническая документация — README, инструкции, пайплайны, troubleshooting, конфигурация |
+| `kestra` | Kestra — flow YAML, schedules, triggers, concurrency, shell tasks, Docker runner, KV secrets |
+| `orchestrator` | Главный агент-маршрутизатор для задач по Go, ClickHouse, Postgres, Kestra |
+| `postgres-sql` | Эксперт по PostgreSQL — SQL, индексы, миграции, транзакции, EXPLAIN ANALYZE |
+| `refactoring` | Рефакторинг Go, SQL и Bash — сохраняя поведение, делая код проще и читабельнее |
+
+**Исключённые агенты:**
+
+- `general` — уже покрыт командой `/run` (default-агент opencode)
+- `README` — вызывается только вручную пользователем, команда не нужна
+
+### 2.4. Как opencode вызывает конкретного агента
 
 ```bash
-opencode run <prompt> --agent go-senior --dangerously-skip-permissions
+opencode run <prompt> --agent <agentName> --dangerously-skip-permissions
 ```
 
-Текущий вызов (без `--agent`):
-```bash
-opencode run <prompt> --dangerously-skip-permissions
-```
+Это уже реализовано в `buildArgs()` (`internal/opencode/agent.go:78-84`).
+
+### 2.5. Файлы, затрагиваемые изменениями
+
+| Файл | Текущая роль | Что меняется |
+|---|---|---|
+| `internal/telegram/agent_commands.go` | `AgentCommand` + `registerAgentCommands()` с 7 агентами | Добавить 10 новых агентов в список |
+| `internal/telegram/bot.go` | `sendHelp()` с 7 агентскими командами | Добавить 10 новых команд в текст справки |
+| `internal/telegram/commands.go` | Интерфейсы `Command`, `CommandRouter` | **Без изменений** — архитектура готова |
+| `internal/opencode/agent.go` | `ExecuteWithAgent()`, `buildArgs()` | **Без изменений** — уже параметризован |
+| `internal/config/config.go` | `OpenCodeDefaultAgent` | **Без изменений** — поле уже есть |
+| `.env.example` | Комментарий `OPENCODE_DEFAULT_AGENT` | **Без изменений** — уже задокументирован |
 
 ## 3. Требования
 
 ### 3.1. Функциональные требования
 
-1. **FR-01**: Бот должен поддерживать 7 новых команд для вызова специализированных opencode-агентов:
-   - `/explore <задача>` → агент `explore`
-   - `/go-review <промпт>` → агент `go-reviewer`
-   - `/go-senior <задача>` → агент `go-senior`
-   - `/react-dev <задача>` → агент `react-developer`
-   - `/react-review <промпт>` → агент `react-reviewer`
-   - `/write-tests <промпт>` → агент `test-writer`
-   - `/tz <задача>` → агент `tz-writer`
+**FR-01**: Бот должен поддерживать 10 новых команд для вызова оставшихся opencode-агентов:
 
-2. **FR-02**: Существующая команда `/run` должна продолжить работать без изменений (агент по умолчанию, без явного `--agent`).
+| Команда | Агент `--agent` | Отображаемое имя |
+|---|---|---|
+| `/bash` | `bash-linux` | Bash/Linux |
+| `/clickhouse` | `clickhouse-sql` | ClickHouse SQL |
+| `/pipeline` | `data-pipeline-architect` | Data Pipeline Architect |
+| `/dbint` | `db-integration` | DB Integration |
+| `/debug` | `debugging` | Debugging |
+| `/docgen` | `documentation` | Documentation |
+| `/kestra` | `kestra` | Kestra |
+| `/orchestrate` | `orchestrator` | Orchestrator |
+| `/postgres` | `postgres-sql` | PostgreSQL |
+| `/refactor` | `refactoring` | Refactoring |
 
-3. **FR-03**: Для каждой новой команды бот должен:
-   - Показать статусное сообщение вида «⏳ Запуск агента <имя>...»
-   - Выполнить opencode с параметром `--agent <имя_агента>`
-   - Вернуть результат пользователю (с разбивкой на части, если ответ длинный)
-   - При ошибке — показать понятное сообщение
-   - Логировать факт вызова, имя агента, длительность, успех/ошибку
+**FR-02**: Все существующие команды (7 агентских + `/run` + файловые + управление) должны продолжить работать без изменений.
 
-4. **FR-04**: Валидация: пустой промпт (только команда без аргументов) → сообщение с подсказкой о формате команды.
+**FR-03**: Для каждой новой команды бот должен:
+- Показать статусное сообщение вида «⏳ Запуск агента <displayName>...»
+- Выполнить opencode с параметром `--agent <agentName>`
+- Вернуть результат пользователю (с разбивкой `sendLongMessage()` на части по 4096 символов)
+- При ошибке — показать понятное сообщение «❌ Агент <displayName> завершился с ошибкой: <текст>»
+- Логировать факт вызова в формате `[AGENT] agent=<name> userID=<id> chatID=<id> elapsed=<dur> status=<success|error>`
 
-5. **FR-05**: Команда `/help` должна отображать актуальный список всех доступных команд, включая новые.
+**FR-04**: Валидация пустого промпта: сообщение «Укажите задачу после команды. Пример: /bash <задача>».
 
-6. **FR-06**: Команда `/write-tests` не должна конфликтовать с существующей `/test` (которая работает с файлами через DeepSeek API). Обе команды должны сосуществовать.
+**FR-05**: Команда `/help` должна отображать актуальный список **всех** 17 агентских команд (+ `/run`), сгруппированных по категориям.
 
-7. **FR-07**: Обработчик команд должен быть расширяемым — добавление новой команды не должно требовать изменения существующего кода диспетчеризации.
+**FR-06**: Команда `/docgen` (агент `documentation`) не должна конфликтовать с существующей `/docs` (файловый обработчик через DeepSeek API). Обоснование выбора `/docgen` — см. раздел 5.
+
+**FR-07**: Добавление нового агента не требует изменения архитектуры — достаточно добавить одну строку в `registerAgentCommands()` и одну строку в `sendHelp()`.
 
 ### 3.2. Нефункциональные требования
 
 1. **NFR-01**: Время отклика на команду (статусное сообщение) — не более 200 мс.
-2. **NFR-02**: Таймаут выполнения агента — настраиваемый (из `OPENCODE_TIMEOUT`).
+2. **NFR-02**: Таймаут выполнения агента — настраиваемый (из `OPENCODE_TIMEOUT`, по умолчанию 600 с).
 3. **NFR-03**: Логирование всех вызовов с указанием имени агента, chatID, userID, длительности и статуса.
-4. **NFR-04**: Код должен следовать принципам SOLID, особенно OCP (Open/Closed Principle) — диспетчер команд должен быть открыт для расширения, закрыт для модификации.
-5. **NFR-05**: Обратная совместимость — все существующие команды должны работать без изменений в поведении.
-6. **NFR-06**: Ограничение длины промпта — 4096 символов (как и сейчас).
+4. **NFR-04**: Код соответствует OCP — добавление агента = добавление записи в список, без изменения логики.
+5. **NFR-05**: Обратная совместимость — все существующие команды работают без изменений.
+6. **NFR-06**: Ограничение длины промпта — 4096 символов (валидация в `ExecuteWithAgent()`).
 
 ## 4. Архитектурное решение
 
-### 4.1. Проблема текущей архитектуры
+### 4.1. Статус архитектуры
 
-Текущий `handleMessage()` — это цепочка из ~15 `if/else if`. При добавлении 7 новых команд она вырастет до ~22 проверок, что:
-- Нарушает OCP (нужно менять код диспетчера для каждой новой команды)
-- Сложно тестировать (все проверки в одном методе)
-- Трудно читать и поддерживать
-
-### 4.2. Предлагаемое решение: Command Dispatcher (Pattern: Command / Strategy)
-
-**Идея**: выделить диспетчеризацию команд в отдельную абстракцию — `CommandRouter`.
+Command Router (паттерн Command/Strategy) **уже реализован**. Никаких архитектурных изменений не требуется. Текущая архитектура:
 
 ```
-                   ┌─────────────────────┐
-                   │     handleMessage   │
-                   │   (bot.go)          │
-                   └─────────┬───────────┘
-                             │
-                             ▼
-                   ┌─────────────────────┐
-                   │   CommandRouter     │
-                   │   (commands.go)     │
-                   │                     │
-                   │  commands []Command │
-                   │  + Register(cmd)    │
-                   │  + Dispatch(msg)    │
-                   └─────────┬───────────┘
-                             │
-                             ▼ iterates
-              ┌──────────────────────────────┐
-              │         Command              │
-              │  (interface)                 │
-              │  + Name() string             │
-              │  + Matches(text string) bool │
-              │  + Execute(bot, msg) error   │
-              └──────────────────────────────┘
-                              △
-                              │ implements
-              ┌───────────────┼───────────────────┐
-              │               │                    │
-     ┌────────┴──────┐ ┌─────┴──────┐    ┌───────┴────────┐
-     │ AgentCommand  │ │ChatCommand │    │FileCommand ... │
-     │ (новый)       │ │(сущ.)      │    │(сущ.)          │
-     │               │ │            │    │                │
-     │ agent: string │ │            │    │                │
-     └───────────────┘ └────────────┘    └────────────────┘
+Telegram API ──► Bot.handleMessage() ──► CommandRouter.Dispatch()
+                                              │
+                                              │ итерация commands[]
+                                              ▼
+                                         AgentCommand.Matches(prefix)
+                                              │
+                                              ▼
+                                         AgentCommand.Execute()
+                                              │
+                                              ├─ sendMessage("⏳ Запуск агента ...")
+                                              └─ go func() {
+                                                    agent.ExecuteWithAgent(ctx, prompt, agentName)
+                                                 }
 ```
 
-**Ключевые компоненты**:
+Расширение сводится к добавлению новых записей в список агентов в `registerAgentCommands()`.
 
-1. **Интерфейс `Command`** — определяет контракт для любой команды:
-   - `Name() string` — имя команды для логирования/help
-   - `Matches(text string) bool` — проверяет, относится ли сообщение к этой команде
-   - `Execute(ctx Context, msg *tgbotapi.Message)` — выполняет команду
+### 4.2. `AgentCommand` — без изменений
 
-2. **`CommandRouter`** — реестр команд, обходит список и вызывает первую подошедшую.
+Структура `AgentCommand` (`internal/telegram/agent_commands.go:12-73`) уже параметризована тремя полями:
+- `prefix` — префикс команды (например, `"/bash"`)
+- `agentName` — имя агента для флага `--agent` (например, `"bash-linux"`)
+- `displayName` — человекочитаемое имя для статусных сообщений и логов (например, `"Bash/Linux"`)
 
-3. **`AgentCommand`** — конкретная реализация для opencode-агентов. Одна структура параметризуется именем агента и префиксом команды (DRY — не 7 отдельных типов, а 7 экземпляров одного типа).
+Все 10 новых команд создаются как экземпляры `AgentCommand` через `NewAgentCommand()` — **ни одной новой структуры или функции не требуется**.
 
-4. **Существующие обработчики** (`handleChat`, `handleCode`, `handleFileCommand`, `handleMode`, `handleState`, `handleRetry`) также оборачиваются в `Command` и регистрируются в роутере.
+### 4.3. Порядок регистрации команд
 
-### 4.3. Структура `AgentCommand`
+Новые агентские команды добавляются в `registerAgentCommands()` в любом порядке — они не конфликтуют по префиксам ни между собой, ни с существующими командами. Порядок проверки в `CommandRouter.Dispatch()` для них не критичен, так как префиксы уникальны.
 
-```go
-// Псевдокод для иллюстрации идеи
-type AgentCommand struct {
-    prefix    string   // например, "/go-senior "
-    agentName string   // например, "go-senior"
-    label     string   // например, "Go Senior Developer"
-    agent     *opencode.Agent
-    logger    *logger.Logger
-}
+Важно: `registerAgentCommands()` вызывается **первым** в `registerCommands()` (`bot.go:61`), до регистрации `/run` и файловых команд. Это гарантирует, что `/bash`, `/debug`, `/refactor` и другие не будут перехвачены fallback-обработчиком.
 
-func (c *AgentCommand) Matches(text string) bool {
-    return strings.HasPrefix(text, c.prefix)
-}
-
-func (c *AgentCommand) Execute(bot *Bot, msg *tgbotapi.Message) {
-    prompt := strings.TrimPrefix(msg.Text, c.prefix)
-    if prompt == "" {
-        bot.sendMessage(msg.Chat.ID, "Укажите задачу после команды. Пример: "+c.prefix+"<задача>")
-        return
-    }
-    // ... отправка статуса, запуск горутины, вызов agent.ExecuteWithAgent(...)
-}
-```
-
-### 4.4. Изменения в `Agent`
-
-Текущий метод:
-```go
-func (a *Agent) Execute(ctx context.Context, prompt string) (string, error)
-```
-
-Новый метод:
-```go
-func (a *Agent) ExecuteWithAgent(ctx context.Context, prompt, agentName string) (string, error)
-```
-
-Старый `Execute` остаётся без изменений (для `/run`) и делегирует вызов `ExecuteWithAgent` с пустым именем агента.
-
-Сборка аргументов командной строки:
-```go
-args := []string{"run", prompt, "--dangerously-skip-permissions"}
-if agentName != "" {
-    args = append(args, "--agent", agentName)
-}
-```
-
-### 4.5. Диаграмма взаимодействия (текстовая)
+### 4.4. Диаграмма взаимодействия (без изменений)
 
 ```
 Пользователь
   │
-  │  /go-senior напиши HTTP-сервер на Go
+  │  /bash проверь права доступа в ./scripts/
   ▼
-Telegram API ───► Bot.handleMessage()
-                      │
-                      ▼
-                CommandRouter.Dispatch(msg)
-                      │
-                      │ итерация по commands
-                      ▼
-                AgentCommand.Matches("/go-senior ...") → true
-                      │
-                      ▼
-                AgentCommand.Execute()
-                      │
-                      ├─► sendMessage("⏳ Запуск агента Go Senior Developer...")
-                      │
-                      └─► go func() {
-                            ctx, cancel := context.WithTimeout(...)
-                            result, err := agent.ExecuteWithAgent(ctx, prompt, "go-senior")
-                            if err → sendMessage("Ошибка...")
-                            else   → sendLongMessage(result)
-                          }
+Telegram API ───► Bot.Start() → b.router.Dispatch(b, msg)
+                                    │
+                                    ▼
+                              AgentCommand("/bash").Matches() → true
+                                    │
+                                    ▼
+                              AgentCommand.Execute()
+                                    │
+                                    ├─► sendMessage("⏳ Запуск агента Bash/Linux...")
+                                    │
+                                    └─► go func() {
+                                          ctx, cancel := context.WithTimeout(...)
+                                          result, err := agent.ExecuteWithAgent(ctx, prompt, "bash-linux")
+                                          ...
+                                        }
 ```
 
-### 4.6. Порядок регистрации команд
+## 5. Конфликт имён: `/docs` vs агент `documentation`
 
-Команды с префиксами должны проверяться до общей команды `/run`. Поэтому порядок регистрации в роутере важен:
+### 5.1. Проблема
 
-1. `/start`, `/help` (точное совпадение)
-2. `/clear`, `/state`, `/retry` (точное совпадение)
-3. `/mode` (с параметром)
-4. Все новые agent-команды: `/explore`, `/go-review`, `/go-senior`, `/react-dev`, `/react-review`, `/write-tests`, `/tz`
-5. `/run` (старая, без агента — проверяется **после** новых команд, так как `/run ` не конфликтует с ними по префиксу)
-6. `/code`, `/review`, `/explain`, `/test`, `/docs` (существующие файловые команды)
-7. `/chat` (с параметром)
-8. Fallback: обычный чат (произвольный текст)
+Существующая команда `/docs <файл>` (`bot.go:111-113`) читает локальный файл и отправляет его содержимое в DeepSeek API для генерации документации. Если назвать команду для агента `documentation` тоже `/docs`, возникнет конфликт: неясно, какой обработчик должен срабатывать.
 
-## 5. Модели данных
+### 5.2. Решение: `/docgen`
 
-### 5.1. Новых таблиц/структур не требуется
+Команда для агента `documentation` получает имя `/docgen` (doc generate / documentation generator).
 
-Все данные остаются in-memory в `MemoryStorage`. Контекст диалогов (`Conversation`) не затрагивается, так как opencode-агенты не используют историю диалогов Telegram-бота — они работают в рамках одного запроса.
+**Обоснование:**
+- Не конфликтует с `/docs` (существующая файловая команда)
+- Семантически понятно: «сгенерировать документацию»
+- Короче альтернатив (`/document`, `/write-docs`, `/gen-docs`)
+- Укладывается в паттерн «глагол» как `/write-tests`, `/refactor`
 
-### 5.2. Структура `Config` — изменения
+### 5.3. Примечание
 
-Добавить одно новое поле (опционально):
+В будущем, если функциональность файловых команд будет перенесена на opencode-агентов, `/docs` и `/docgen` можно будет объединить. Но сейчас это разные механизмы (DeepSeek API через бота vs OpenCode Agent с доступом к workspace), поэтому разделение оправдано.
 
-```go
-type Config struct {
-    // ... существующие поля ...
+## 6. Обоснование названий новых команд
 
-    OpenCodeDefaultAgent string  // NEW: имя агента по умолчанию для /run (пусто = default opencode agent)
-}
-```
+| Команда | Агент `--agent` | Почему так названа |
+|---|---|---|
+| `/bash` | `bash-linux` | Коротко, очевидно, ассоциация с shell/bash |
+| `/clickhouse` | `clickhouse-sql` | Узнаваемое имя продукта, `/ch` было бы непонятно |
+| `/pipeline` | `data-pipeline-architect` | Короче полного имени, понятно для целевой аудитории |
+| `/dbint` | `db-integration` | «db integration» в сокращении, `/db-integration` тоже допустимо |
+| `/debug` | `debugging` | Глагол, интуитивно понятен |
+| `/docgen` | `documentation` | «doc generate», не конфликтует с `/docs` |
+| `/kestra` | `kestra` | Имя продукта, конфликтов не предвидится |
+| `/orchestrate` | `orchestrator` | Глагол, «оркестрировать задачу» |
+| `/postgres` | `postgres-sql` | Узнаваемое имя продукта, `/pg` было бы непонятно |
+| `/refactor` | `refactoring` | Глагол, интуитивно понятен |
 
-**Переменная окружения**: `OPENCODE_DEFAULT_AGENT` (необязательная, по умолчанию пустая строка).
+**Альтернативы (отклонены):**
+- `/linux` вместо `/bash` — слишком широко, агент заточен именно под bash/shell
+- `/ch` вместо `/clickhouse` — непонятно для новичков
+- `/pg` вместо `/postgres` — непонятно для новичков
+- `/orch` вместо `/orchestrate` — неочевидное сокращение
+- `/doc-write` вместо `/docgen` — длиннее, менее идиоматично
 
-**Обоснование**: позволяет администратору бота переопределить агента по умолчанию для `/run` без изменения кода.
+## 7. Обработка ошибок
 
-### 5.3. `.env.example` — изменения
-
-Добавить строку:
-```env
-# OPENCODE_DEFAULT_AGENT=general  # Агент по умолчанию для /run (пусто = default opencode)
-```
-
-## 6. API / Интерфейсы
-
-### 6.1. Интерфейс `Command` (новый файл `internal/telegram/commands.go`)
-
-```go
-type Command interface {
-    // Name возвращает человекочитаемое имя команды (для логирования и /help)
-    Name() string
-    // Matches проверяет, относится ли текст сообщения к этой команде
-    Matches(text string) bool
-    // Execute выполняет команду. Получает Bot для доступа к sendMessage, логеру, хранилищу.
-    Execute(bot *Bot, msg *tgbotapi.Message)
-}
-```
-
-**Контекст выполнения** — сама структура `*Bot`, так как в ней уже есть все зависимости (api, cfg, ds, store, logger, agent). Выделять отдельный `Context` нецелесообразно — это усложнит код без выигрыша.
-
-### 6.2. `CommandRouter`
-
-```go
-type CommandRouter struct {
-    commands []Command
-}
-
-func NewCommandRouter() *CommandRouter
-func (r *CommandRouter) Register(cmd Command)       // регистрирует команду (порядок важен!)
-func (r *CommandRouter) Dispatch(bot *Bot, msg *tgbotapi.Message) bool  // возвращает false если ни одна команда не подошла
-```
-
-### 6.3. Метод `Agent.ExecuteWithAgent` (изменение `internal/opencode/agent.go`)
-
-```go
-// ExecuteWithAgent выполняет opencode с указанным агентом.
-// Если agentName пустой, используется агент по умолчанию (без флага --agent).
-func (a *Agent) ExecuteWithAgent(ctx context.Context, prompt, agentName string) (string, error)
-```
-
-Сигнатура существующего `Execute` **не меняется** для обратной совместимости. Внутри он делегирует `ExecuteWithAgent(ctx, prompt, "")`.
-
-### 6.4. Telegram-команды и их параметры
-
-| Команда | Формат | Агент opencode | Валидация |
-|---|---|---|---|
-| `/explore` | `/explore <задача>` | `explore` | prompt не пустой, ≤ 4096 символов |
-| `/go-review` | `/go-review <файл или промпт>` | `go-reviewer` | prompt не пустой, ≤ 4096 |
-| `/go-senior` | `/go-senior <задача>` | `go-senior` | prompt не пустой, ≤ 4096 |
-| `/react-dev` | `/react-dev <задача>` | `react-developer` | prompt не пустой, ≤ 4096 |
-| `/react-review` | `/react-review <файл или промпт>` | `react-reviewer` | prompt не пустой, ≤ 4096 |
-| `/write-tests` | `/write-tests <файл или промпт>` | `test-writer` | prompt не пустой, ≤ 4096 |
-| `/tz` | `/tz <задача>` | `tz-writer` | prompt не пустой, ≤ 4096 |
-| `/run` | `/run <задача>` | default (из `OPENCODE_DEFAULT_AGENT`) | prompt не пустой, ≤ 4096 |
-
-**Примечание по `/go-review` и `/react-review`**: Для ревью opencode-агентам **не нужно** передавать содержимое файла через промпт. Пользователь может:
-1. Передать имя файла (агент прочитает его сам из workspace) — `/go-review ./internal/telegram/bot.go`
-2. Передать фрагмент кода текстом — `/go-review func handleMessage...`
-3. Передать промпт «проверь последний коммит» — агент сам выполнит `git diff`
-
-Это принципиально отличается от существующих команд `/review`, `/explain`, `/test`, `/docs`, которые **читают файл на стороне бота** и отправляют содержимое в DeepSeek API.
-
-## 7. Конфликт имён: `/test` vs `/write-tests`
-
-### Проблема
-
-Существующая команда `/test <файл>` читает локальный файл и отправляет его в DeepSeek API для генерации тестов. Новая команда для агента `test-writer` должна вызывать opencode.
-
-Если назвать новую команду `/test`, возникнет конфликт: непонятно, какой обработчик должен сработать.
-
-### Решение: `/write-tests`
-
-Новая команда получает имя `/write-tests`. Обоснование:
-- Семантически понятно: «напиши тесты»
-- Не конфликтует с `/test` (существующая работает с файлами через DeepSeek)
-- Аналоги `/gen-tests`, `/generate-tests` менее идиоматичны
-- В будущем при рефакторинге можно объединить функциональность, но сейчас это разные механизмы (DeepSeek API vs OpenCode Agent)
-
-### Альтернатива (не рекомендуется)
-
-Можно было бы добавить подкоманду: `/test file <файл>` (DeepSeek) vs `/test agent <промпт>` (opencode). Но это:
-- Ломает обратную совместимость для `/test`
-- Усложняет пользовательский опыт
-- Требует парсинга подкоманд
-
-**Решение принято: `/write-tests`**.
-
-## 8. Обработка ошибок
-
-### 8.1. Сценарии ошибок и реакция
+### 7.1. Сценарии ошибок (без изменений относительно уже реализованного)
 
 | Сценарий | Сообщение пользователю | Логирование |
 |---|---|---|
-| Пустой промпт (только команда) | «Укажите задачу после команды. Пример: /go-senior <задача>» | WARN |
-| Промпт > 4096 символов | «Текст задачи слишком длинный (максимум 4096 символов)» | WARN |
-| Таймаут выполнения | «⏰ Превышено время ожидания ответа от агента <имя>. Попробуйте упростить задачу.» | ERROR с elapsed |
-| Ошибка запуска opencode (не найден бинарник) | «❌ OpenCode CLI не найден. Обратитесь к администратору.» | ERROR |
-| Ошибка выполнения агента | «❌ Агент <имя> завершился с ошибкой: <первые 200 символов stderr>» | ERROR с полным stderr |
-| context.Canceled (пользователь остановил бота) | Не отправляется (контекст отменён) | WARN |
-| Пустой результат (успех, но нет вывода) | «✅ Агент <имя> выполнил задачу (ответ пуст)» | INFO |
+| Пустой промпт | «Укажите задачу после команды. Пример: /bash <задача>» | WARN |
+| Промпт > 4096 символов | Возвращается error из `ExecuteWithAgent()` | ERROR |
+| Таймаут выполнения | «❌ Агент <displayName> завершился с ошибкой: timeout exceeded...» | ERROR с elapsed |
+| Ошибка выполнения агента | «❌ Агент <displayName> завершился с ошибкой: <первые 200 символов stderr>» | ERROR |
+| Пустой результат (успех, нет вывода) | «✅ Агент <displayName> выполнил задачу (ответ пуст)» | INFO |
 
-### 8.2. Таймауты
+### 7.2. Таймауты
 
-- Таймаут задаётся через `OPENCODE_TIMEOUT` (по умолчанию 600 секунд)
-- Для всех агентов используется одно значение
-- При таймауте процесс `opencode` уничтожается через `context.Context`
+- Единый таймаут `OPENCODE_TIMEOUT` (по умолчанию 600 с) для всех агентов
+- При таймауте процесс `opencode` уничтожается через `context.Context` (уже реализовано в `ExecuteWithAgent`)
+- Механизм `/retry` **не применяется** к opencode-агентам (они не сохраняют историю диалогов)
 
-### 8.3. Механизм повтора (`/retry`)
+## 8. План реализации
 
-Команда `/retry` **не применяется** к opencode-агентам, так как они не сохраняют историю диалогов. `/retry` работает только с DeepSeek-чатом (как и сейчас).
-
-## 9. План реализации
-
-### Этап 1: Рефакторинг диспетчеризации (подготовительный)
-
-**Файлы**:
-- **Создать** `internal/telegram/commands.go` — интерфейс `Command`, `CommandRouter`, функции `Register`/`Dispatch`
-- **Изменить** `internal/telegram/bot.go`:
-  - Добавить поле `router *CommandRouter` в структуру `Bot`
-  - Инициализировать роутер в `NewBot()`
-  - Заменить тело `handleMessage()` на `b.router.Dispatch(b, msg)`
-  - Оставить `sendHelp`, `sendMessage`, `sendLongMessage`, `splitMessage`, `createProxyHTTPClient` на месте
-
-**Суть**: все существующие обработчики (`handleChat`, `handleCode`, `handleFileCommand`, `handleMode`, `handleState`, `handleRetry`, `handleRun`) оборачиваются в адаптеры `Command` и регистрируются в роутере. Поведение не меняется.
-
-### Этап 2: Адаптация `Agent` для параметризованного вызова
-
-**Файл**: `internal/opencode/agent.go`
-- Добавить метод `ExecuteWithAgent(ctx context.Context, prompt, agentName string) (string, error)`
-- Переписать `Execute` как делегат: `return a.ExecuteWithAgent(ctx, prompt, "")`
-- Вынести сборку аргументов `opencode` в отдельный метод `buildArgs(prompt, agentName string) []string`
-
-### Этап 3: Создание `AgentCommand` и регистрация новых команд
-
-**Файлы**:
-- **Создать** `internal/telegram/agent_commands.go`:
-  - Структура `AgentCommand` с полями `prefix`, `agentName`, `displayName`
-  - Конструктор `NewAgentCommand(prefix, agentName, displayName string)`
-  - Методы `Name()`, `Matches()`, `Execute()`
-- В `NewBot()` зарегистрировать 7 экземпляров `AgentCommand` в роутере (до регистрации `/run`)
-
-### Этап 4: Обновление `/help`
-
-**Файл**: `internal/telegram/bot.go` метод `sendHelp()`
-
-Обновить текст справки, сгруппировав команды по категориям:
-
-```
-🤖 OpenCode агенты (выполнение задач):
-/run <задача> — общий агент (по умолчанию)
-/explore <задача> — исследование кодовой базы
-/go-senior <задача> — написание Go-кода (Senior уровень)
-/go-review <промпт> — ревью Go-кода
-/react-dev <задача> — разработка React-компонентов
-/react-review <промпт> — ревью React-кода
-/write-tests <промпт> — генерация тестов
-/tz <задача> — создание технического задания
-
-💬 Чат с DeepSeek:
-/chat <текст> — запрос к AI
-/code <текст> — генерация кода (coder модель)
-/mode <модель> — смена модели (chat/coder/reasoner)
-
-📄 Работа с файлами:
-/review <файл> — ревью кода
-/explain <файл> — объяснение кода
-/test <файл> — генерация тестов
-/docs <файл> — документация
-
-⚙️ Управление:
-/state — статистика токенов
-/retry — повторить последний запрос
-/clear — очистить историю
-/help — справка
-```
-
-### Этап 5: Валидация и финальные штрихи
+### Этап 1: Добавить новых агентов в `registerAgentCommands()`
 
 **Файл**: `internal/telegram/agent_commands.go`
-- Убедиться, что пустой промпт корректно обрабатывается
-- Единообразие статусных сообщений: «⏳ Запуск агента <displayName>...»
-- Логирование: `[AGENT] agent=<name> userID=<id> chatID=<id> elapsed=<duration> status=<success|error>`
 
-### Этап 6: Конфигурация
+Добавить 10 новых записей в слайс `agents` внутри `registerAgentCommands()`:
 
-**Файлы**:
-- `internal/config/config.go` — добавить поле `OpenCodeDefaultAgent`
-- `.env.example` — добавить строку с комментарием
+```go
+{"/bash", "bash-linux", "Bash/Linux"},
+{"/clickhouse", "clickhouse-sql", "ClickHouse SQL"},
+{"/pipeline", "data-pipeline-architect", "Data Pipeline Architect"},
+{"/dbint", "db-integration", "DB Integration"},
+{"/debug", "debugging", "Debugging"},
+{"/docgen", "documentation", "Documentation"},
+{"/kestra", "kestra", "Kestra"},
+{"/orchestrate", "orchestrator", "Orchestrator"},
+{"/postgres", "postgres-sql", "PostgreSQL"},
+{"/refactor", "refactoring", "Refactoring"},
+```
 
-### Этап 7: Тестирование
+**Объём изменений**: ~10 строк. Логика `AgentCommand.Execute()` не меняется — она уже параметризована.
 
-**Файл**: `internal/telegram/agent_commands_test.go`
-- Unit-тесты для `Matches()` (все префиксы, включая `/run`, `/run_other_command`)
-- Unit-тесты для `ExecuteWithAgent` (сборка аргументов)
-- Unit-тесты для обработки пустого промпта
-- Интеграционный тест роутера: регистрация команд, порядок срабатывания
+### Этап 2: Обновить `sendHelp()`
 
-## 10. Изменения в существующих файлах (сводка)
+**Файл**: `internal/telegram/bot.go`, метод `sendHelp()` (строка 239)
+
+Обновить секцию «🤖 OpenCode агенты» в тексте справки, добавив 10 новых команд. Сгруппировать по назначению для читаемости:
+
+```
+🤖 OpenCode агенты:
+/run <задача> — общий агент (по умолчанию)
+
+💻 Go-разработка:
+/go-senior <задача> — написание Go-кода (Senior уровень)
+/go-review <промпт> — ревью Go-кода
+/debug <задача> — диагностика ошибок
+/refactor <задача> — рефакторинг кода
+
+🗄️ Базы данных:
+/postgres <задача> — PostgreSQL (SQL, индексы, миграции)
+/clickhouse <задача> — ClickHouse SQL (оптимизация запросов)
+/dbint <задача> — интеграция Go с БД
+
+⚙️ Инфраструктура:
+/bash <задача> — Bash, Linux, shell-скрипты
+/kestra <задача> — Kestra (flow YAML, triggers)
+/pipeline <задача> — проектирование data pipelines
+/orchestrate <задача> — оркестрация задач
+
+🌐 Frontend:
+/react-dev <задача> — разработка React-компонентов
+/react-review <промпт> — ревью React-кода
+
+📝 Документирование и тестирование:
+/tz <задача> — создание технического задания
+/docgen <задача> — генерация документации
+/write-tests <промпт> — генерация тестов
+/explore <задача> — исследование кодовой базы
+```
+
+Существующие секции «💬 Чат с DeepSeek», «📄 Работа с файлами», «⚙️ Управление» остаются без изменений.
+
+**Объём изменений**: ~25 строк в help-тексте.
+
+### Этап 3: Проверка и финальные штрихи
+
+- Убедиться, что все 10 команд регистрируются и отображаются в `/help`
+- Проверить отсутствие пересечения префиксов с существующими командами
+- Проверить консистентность имён агентов с конфигурацией opencode
+- Убедиться, что `go build` и `go vet` проходят без ошибок
+
+### Этап 4: Тестирование (опционально, по запросу)
+
+**Файл**: `internal/telegram/agent_commands_test.go` (создать при необходимости)
+- Table-driven тесты: `Matches()` для каждого из 10 новых префиксов
+- Тесты: пустой промпт → сообщение с подсказкой
+- Тесты: промпт с аргументом → вызов `ExecuteWithAgent` с правильным `agentName`
+
+## 9. Изменения в существующих файлах (сводка)
 
 | Файл | Тип изменения | Описание |
 |---|---|---|
-| `internal/telegram/commands.go` | **Создать** | Интерфейс `Command`, структура `CommandRouter`, методы `Register`/`Dispatch` |
-| `internal/telegram/agent_commands.go` | **Создать** | Структура `AgentCommand` и конструктор `NewAgentCommand` |
-| `internal/telegram/agent_commands_test.go` | **Создать** | Тесты для `AgentCommand` |
-| `internal/telegram/bot.go` | **Изменить** | Добавить `router` в `Bot`; заменить тело `handleMessage` на `b.router.Dispatch()`; обновить `sendHelp`; вынести регистрацию команд в `registerCommands()` |
-| `internal/opencode/agent.go` | **Изменить** | Добавить `ExecuteWithAgent`; рефакторинг `Execute` в делегат; выделить `buildArgs` |
-| `internal/config/config.go` | **Изменить** | Добавить поле `OpenCodeDefaultAgent` с чтением из `OPENCODE_DEFAULT_AGENT` |
-| `.env.example` | **Изменить** | Добавить `OPENCODE_DEFAULT_AGENT` |
-| `internal/telegram/handlers.go` | Без изменений | `handleChat` остаётся как есть, оборачивается в `Command` при регистрации |
-| `internal/telegram/file_handlers.go` | Без изменений | `handleFileCommand` остаётся как есть, оборачивается в `Command` |
-| `internal/telegram/mode_handlers.go` | Без изменений | `handleMode`, `handleCode` остаются как есть |
-| `internal/telegram/state_handlers.go` | Без изменений | `handleState`, `handleRetry` остаются как есть |
+| `internal/telegram/agent_commands.go` | **Изменить** | Добавить 10 записей в слайс `agents` внутри `registerAgentCommands()` |
+| `internal/telegram/bot.go` | **Изменить** | Обновить текст в `sendHelp()` — добавить 10 новых команд |
+| `internal/telegram/commands.go` | **Без изменений** | Интерфейсы и роутер уже готовы |
+| `internal/opencode/agent.go` | **Без изменений** | `ExecuteWithAgent()` и `buildArgs()` уже параметризованы |
+| `internal/config/config.go` | **Без изменений** | `OpenCodeDefaultAgent` уже есть |
+| `.env.example` | **Без изменений** | `OPENCODE_DEFAULT_AGENT` уже задокументирован |
 
-## 11. Риски и компромиссы
+## 10. Риски и компромиссы
 
-### 11.1. Риски
+### 10.1. Риски
 
 | Риск | Вероятность | Влияние | Митигация |
 |---|---|---|---|
-| opencode меняет CLI-интерфейс (флаг `--agent`) | Низкая | Среднее | Зафиксировать формат аргументов в `buildArgs()`, легко изменить в одном месте |
-| Большой вывод агента забивает очередь сообщений Telegram (rate limiting) | Средняя | Низкое | Уже есть `sendLongMessage` с разбивкой по 4096. Добавить задержку между частями (50-100ms) при необходимости |
-| Длительное выполнение агента (10+ минут) приводит к накоплению горутин | Средняя | Среднее | Таймаут через `context.WithTimeout`, настраиваемый `OPENCODE_TIMEOUT`. Добавить метрику активных горутин |
-| Пересечение workspace между параллельными вызовами агентов | Низкая | Высокое | opencode изолирует workspace через git worktree или отдельную директорию. Уточнить в документации opencode. Как минимум — убедиться, что `OPENCODE_WORKSPACE` уникален для каждого вызова |
-| Команда `/tz` может конфликтовать с чем-то в будущем (короткое имя) | Низкая | Низкое | Переименовать при необходимости, сейчас конфликтов нет |
+| opencode меняет имена агентов (например, `bash-linux` → `bash`) | Низкая | Низкое | Имена зафиксированы в одном месте — `registerAgentCommands()`. Легко обновить. |
+| Команда `/dbint` непонятна пользователям | Средняя | Низкое | При необходимости переименовать в `/db-integration` — это одна строка в списке агентов. |
+| Команда `/orchestrate` может быть воспринята как «оркестрация музыки» | Низкая | Низкое | Целевая аудитория — разработчики, контекст очевиден. |
+| Рост количества команд в `/help` делает справку слишком длинной | Средняя | Низкое | Сгруппированы по категориям. При дальнейшем росте можно рассмотреть пагинацию или `/help <категория>`. |
+| Пересечение workspace между параллельными вызовами агентов | Низкая | Высокое | Уже существующий риск, не специфичен для новых команд. Решается настройкой `OPENCODE_WORKSPACE`. |
 
-### 11.2. Компромиссы
+### 10.2. Компромиссы
 
-1. **Не используется библиотека роутинга команд Telegram** (типа `telebot`). Обоснование: минимум внешних зависимостей, простой самописный роутер покрывает все нужды.
+1. **Не добавляются подкоманды** (типа `/agent bash-linux`). Обоснование: пользователь явно запросил отдельные команды, и архитектура `AgentCommand` уже заточена под плоский список команд. Это проще, чем парсинг подкоманд, и улучшает discoverability.
 
-2. **Все agent-команды — экземпляры одной структуры `AgentCommand`**, а не отдельные типы. Это осознанное решение DRY. Если в будущем какая-то команда потребует уникального поведения — можно создать отдельный тип.
+2. **Все команды однотипны** — одинаковые статусные сообщения, одинаковый формат ошибок. Это осознанное решение для консистентности UX. Если в будущем какой-то агент потребует уникального поведения — `AgentCommand` можно расширить или создать отдельную реализацию `Command`.
 
-3. **Статусные сообщения однотипны** для всех агентов — не делаем уникальные эмодзи/тексты для каждого. При необходимости легко расширить через поле `statusMessage` в `AgentCommand`.
+3. **`sendHelp()` — хардкод**, а не динамическая генерация из списка команд. Для 17 агентских команд это приемлемо. При росте до 30+ стоит задуматься об авто-генерации из роутера.
 
-4. **`sendHelp` хардкодится**, а не генерируется из списка команд. Для 20+ команд это приемлемо; при росте до 50+ стоит задуматься о динамической генерации.
+4. **Имена команд на английском**, несмотря на русскоязычную аудиторию. Обоснование: техническая аудитория, short-команды на английском — стандарт в Telegram-ботах. Русские транслитерации (`/баш`, `/отладка`) были бы неудобны для ввода и неочевидны.
 
-### 11.3. Альтернативное решение (отклонено)
+### 10.3. Альтернативные решения (отклонены)
 
-**Использование одного обработчика с параметром**: `/agent <имя_агента> <задача>` вместо отдельных команд.
+**A. Отдельные обработчики для каждого агента** (вместо `AgentCommand`):
+- Отклонено: нарушает DRY, 10+ одинаковых структур с копипастой логики
 
-Отклонено, потому что:
-- Хуже UX (пользователь должен помнить точные имена агентов)
-- Сложнее валидация и подсказки
-- Отдельные команды можно искать в истории чата
-- Пользователь явно запросил отдельные команды
+**B. Команда `/agent <имя> <задача>`** — один обработчик с параметром:
+- Отклонено: хуже UX, пользователь должен помнить точные имена агентов
 
-## 12. Метрики приёмки
+**C. Динамическая регистрация через конфиг** (список агентов в `.env`):
+- Отклонено: избыточно для текущего масштаба, усложняет валидацию имён агентов
 
-- [ ] Все 7 новых команд доступны и вызывают правильного агента
-- [ ] `/run` продолжает работать без изменений
-- [ ] `/test` и `/write-tests` работают независимо
-- [ ] `/help` показывает актуальный список команд
-- [ ] Пустой промпт выдаёт подсказку
-- [ ] Таймаут корректно обрывает выполнение
-- [ ] Логи содержат имя агента
-- [ ] Тесты проходят (cover новых файлов > 80%)
-- [ ] Обратная совместимость: все старые команды работают
-- [ ] Код проходит `go vet` и `go build`
+## 11. Метрики приёмки
+
+- [ ] Все 10 новых команд зарегистрированы и доступны: `/bash`, `/clickhouse`, `/pipeline`, `/dbint`, `/debug`, `/docgen`, `/kestra`, `/orchestrate`, `/postgres`, `/refactor`
+- [ ] Каждая команда вызывает правильного агента (соответствие `--agent <name>`)
+- [ ] Все 7 существующих агентских команд продолжают работать без изменений
+- [ ] `/run` работает без изменений
+- [ ] `/docs` (файловая команда) и `/docgen` (агент) не конфликтуют
+- [ ] `/help` отображает актуальный список всех 17 агентских команд (+ `/run`)
+- [ ] Пустой промпт для любой новой команды выдаёт подсказку с примером
+- [ ] Таймаут корректно обрывает выполнение для всех агентов
+- [ ] Логи содержат `[AGENT] agent=<имя>` для всех новых команд
+- [ ] `go build` и `go vet` проходят без ошибок
+- [ ] Обратная совместимость: все старые команды (`/test`, `/review`, `/explain`, `/chat` и др.) работают

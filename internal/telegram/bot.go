@@ -237,15 +237,35 @@ func createProxyHTTPClient(addr, username, password string) (*http.Client, error
 }
 
 func (b *Bot) sendHelp(chatID int64) {
-	helpText := `🤖 OpenCode агенты (выполнение задач):
+	helpText := `🤖 OpenCode агенты:
 /run <задача> — общий агент (по умолчанию)
-/explore <задача> — исследование кодовой базы
+
+💻 Go-разработка:
 /go-senior <задача> — написание Go-кода (Senior уровень)
 /go-review <промпт> — ревью Go-кода
+/debug <задача> — диагностика ошибок
+/refactor <задача> — рефакторинг кода
+
+🗄️ Базы данных:
+/postgres <задача> — PostgreSQL (SQL, индексы, миграции)
+/clickhouse <задача> — ClickHouse SQL (оптимизация запросов)
+/dbint <задача> — интеграция Go с БД
+
+⚙️ Инфраструктура:
+/bash <задача> — Bash, Linux, shell-скрипты
+/kestra <задача> — Kestra (flow YAML, triggers)
+/pipeline <задача> — проектирование data pipelines
+/orchestrate <задача> — оркестрация задач
+
+🌐 Frontend:
 /react-dev <задача> — разработка React-компонентов
 /react-review <промпт> — ревью React-кода
-/write-tests <промпт> — генерация тестов
+
+📝 Документирование и тестирование:
 /tz <задача> — создание технического задания
+/docgen <задача> — генерация документации
+/write-tests <промпт> — генерация тестов
+/explore <задача> — исследование кодовой базы
 
 💬 Чат с DeepSeek:
 /chat <текст> — запрос к AI
