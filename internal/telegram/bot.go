@@ -127,6 +127,9 @@ func (b *Bot) Start() {
 	updates := b.api.GetUpdatesChan(u)
 
 	b.logger.Info("Bot started and polling updates...")
+	for _, chat := range b.cfg.AllowedChatIDs {
+		b.sendMessage(chat, "✅ Opencode агент запущен!")
+	}
 
 	for update := range updates {
 		if update.Message == nil {
